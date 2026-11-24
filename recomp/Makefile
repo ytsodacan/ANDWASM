@@ -27,10 +27,9 @@ $(shell mkdir -p $(OUT)/obj; echo '$(CFLAGS)' | cmp -s - $(FLAGS_STAMP) || echo 
 $(OUT)/hle_gen.c: recomp/gen_hle.py
 	python3 -I recomp/gen_hle.py $@
 
-# Very large generated files (one lifted function can be several MB of C) compile at -O0: -O1 takes hours on them.
-BIG_SRC := $(shell find $(OUT)/gen -name '*.c' -size +4M 2>/dev/null)
-BIG_OBJ := $(patsubst $(OUT)/gen/%.c,$(OUT)/obj/%.o,$(BIG_SRC))
-$(BIG_OBJ): $(OUT)/obj/%.o: $(OUT)/gen/%.c $(RT)/rt.h $(FLAGS_STAMP)
+# Very large generated files (one lifted function can be several MB of C) must stay at -O1: -O0 keeps every
+# intermediate value as its own WebAssembly local and exceeds the per-function local limit. They are just slow to compile.
+$(OUT)/obj/%.o: $(OUT)/gen/%.c $(RT)/rt.h $(FLAGS_STAMP)
 	@mkdir -p $(dir $@)
 	$(EMCC) $(subst -O1,-O0,$(CFLAGS)) -Wno-error=int-conversion -c $< -o $@
 
