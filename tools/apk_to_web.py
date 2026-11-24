@@ -26,6 +26,17 @@ def need(path, what):
     if not Path(path).exists():
         sys.exit(f"missing {what}: {path}")
 
+# Native libraries that are SDKs, not the game (crash reporting, ML runtimes, C++ runtimes, audio middleware).
+SDK_PREFIXES = ("libcrashlytics", "libtensorflow", "libc++", "libgnustl", "libstlport", "libfmod", "libopenal", "libadjust",
+                "libappsflyer", "libfacebook", "libgoogle", "libunity_sdk", "libsentry", "libmaps")
+
+def pick_game_library(lib_dir):
+    """The game's own code is the largest x86 library that isn't an SDK."""
+    if not lib_dir.is_dir():
+        return None
+    cands = [p for p in lib_dir.glob("*.so") if not p.name.startswith(SDK_PREFIXES)]
+    return max(cands, key=lambda p: p.stat().st_size) if cands else None
+
 def check_tools():
     try:
         import numpy, PIL  # noqa: F401
@@ -47,14 +58,17 @@ def main():
     emsdk = check_tools()
     print(f"[1/4] extract {apk.name}")
     ex = work / "extract"
-    if not (ex / "raw/lib/x86/libg.so").exists():
+    if not (ex / "raw/lib/x86").is_dir():
         run([PY, "-I", ROOT / "tools/extract_apk.py", apk, ex])
-    need(ex / "raw/lib/x86/libg.so", "x86 libg.so inside the APK (is this the 32-bit x86 build?)")
+    game = pick_game_library(ex / "raw/lib/x86")
+    need(game, "x86 game library inside the APK (is this an x86 build? the APK needs lib/x86/*.so)")
     need(ex / "raw/assets", "assets folder from the APK")
-    print("[2/4] lift x86 libg.so to C")
+    print(f"[2/4] lift {game.name} (x86) to C")
     lib = work / "libg"
+    game_copy = ex / "game.so"
+    shutil.copyfile(game, game_copy)
     if not (lib / "libg.img").exists():
-        run([PY, "-I", ROOT / "recomp/build.py", ex / "raw/lib/x86/libg.so", lib])
+        run([PY, "-I", ROOT / "recomp/build.py", game_copy, lib])
     need(lib / "gen", "lifted C sources (build.py output)")
     need(lib / "libg.img", "memory image (build.py output)")
     print("[3/4] compile to WebAssembly")
