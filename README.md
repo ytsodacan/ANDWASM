@@ -17,6 +17,15 @@ The output appears next to the APK as `<name>-web/` (a `manifest.json`, the comp
    - compile to WebAssembly with emscripten (`recomp/Makefile`)
    - pack the game files (`tools/pack_dist.py`)
 
+## Web loader
+`web/` holds a generic loader for the output: `index.html` + `andwasm-loader.js` (downloads and checks each file, unpacks the assets, starts the game) + `coi-sw.js` (the headers threaded wasm needs on hosts that can't send them).
+
+To try a build locally:
+```
+cp -R <name>-web/* web/   # or copy web/ next to the output
+python3 web/serve.py <folder> 8000     # then open http://localhost:8000/
+```
+
 ## Requirements
 - Rust (`cargo`), Python 3 with `numpy` and `Pillow`, `unzip`
 - Emscripten SDK at `~/emsdk` (or set `EMSDK`)
