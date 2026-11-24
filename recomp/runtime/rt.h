@@ -38,6 +38,8 @@ typedef double   __attribute__((aligned(1), may_alias)) f64u;
 #define W16(a,v) (*(u16u*)P(a)=(uint16_t)(v))
 #define W32(a,v) (*(u32u*)P(a)=(uint32_t)(v))
 #define W64(a,v) (*(u64u*)P(a)=(uint64_t)(v))
+// 128-bit memory operand used as a 64-bit count (psrlq/psllq m128): the low quadword.
+#define M128(a) (*(u64u*)P(a))
 #define WF32(a,v) (*(f32u*)P(a)=(float)(v))
 #define WF64(a,v) (*(f64u*)P(a)=(double)(v))
 #define PARITY(r) (!__builtin_parity((uint32_t)(r)&0xFFu))

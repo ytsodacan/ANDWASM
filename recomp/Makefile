@@ -27,6 +27,13 @@ $(shell mkdir -p $(OUT)/obj; echo '$(CFLAGS)' | cmp -s - $(FLAGS_STAMP) || echo 
 $(OUT)/hle_gen.c: recomp/gen_hle.py
 	python3 -I recomp/gen_hle.py $@
 
+# Very large generated files (one lifted function can be several MB of C) compile at -O0: -O1 takes hours on them.
+BIG_SRC := $(shell find $(OUT)/gen -name '*.c' -size +4M 2>/dev/null)
+BIG_OBJ := $(patsubst $(OUT)/gen/%.c,$(OUT)/obj/%.o,$(BIG_SRC))
+$(BIG_OBJ): $(OUT)/obj/%.o: $(OUT)/gen/%.c $(RT)/rt.h $(FLAGS_STAMP)
+	@mkdir -p $(dir $@)
+	$(EMCC) $(subst -O1,-O0,$(CFLAGS)) -Wno-error=int-conversion -c $< -o $@
+
 $(OUT)/obj/%.o: $(OUT)/gen/%.c $(RT)/rt.h $(FLAGS_STAMP)
 	@mkdir -p $(dir $@)
 	$(EMCC) $(CFLAGS) -Wno-error=int-conversion -c $< -o $@
@@ -42,10 +49,10 @@ $(OUT)/obj/rt_%.o: $(OUT)/%.c $(RT)/rt.h $(FLAGS_STAMP)
 $(OUT)/obj/web_hle.o: $(RT)/hle.c $(RT)/rt.h $(FLAGS_STAMP)
 	$(EMCC) $(CFLAGS) -DWEB_BUILD -c $< -o $@
 WEB_RT_OBJ := $(filter-out $(OUT)/obj/rt_hle.o,$(RT_OBJ)) $(OUT)/obj/web_hle.o
-$(OUT)/web/libg.js: $(GEN_OBJ) $(WEB_RT_OBJ)
+$(OUT)/web/libg.js: $(GEN_OBJ) $(WEB_RT_OBJ) recomp/web/index.html
 	@mkdir -p $(dir $@)
 	$(EMCC) $(LDFLAGS) $(GEN_OBJ) $(WEB_RT_OBJ) -o $@
-	[ -f recomp/web/index.html ] && cp recomp/web/index.html $(OUT)/web/index.html || true
+	cp recomp/web/index.html $(OUT)/web/index.html
 
 .PHONY: all
 
