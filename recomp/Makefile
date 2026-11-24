@@ -42,7 +42,7 @@ $(OUT)/obj/rt_%.o: $(OUT)/%.c $(RT)/rt.h $(FLAGS_STAMP)
 $(OUT)/obj/web_hle.o: $(RT)/hle.c $(RT)/rt.h $(FLAGS_STAMP)
 	$(EMCC) $(CFLAGS) -DWEB_BUILD -c $< -o $@
 WEB_RT_OBJ := $(filter-out $(OUT)/obj/rt_hle.o,$(RT_OBJ)) $(OUT)/obj/web_hle.o
-$(OUT)/web/libg.js: $(GEN_OBJ) $(WEB_RT_OBJ) recomp/web/index.html
+$(OUT)/web/libg.js: $(GEN_OBJ) $(WEB_RT_OBJ)
 	@mkdir -p $(dir $@)
 	$(EMCC) $(LDFLAGS) $(GEN_OBJ) $(WEB_RT_OBJ) -o $@
 	[ -f recomp/web/index.html ] && cp recomp/web/index.html $(OUT)/web/index.html || true
