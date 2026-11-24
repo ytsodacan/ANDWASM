@@ -1,0 +1,7 @@
+[package]
+name = "andwasm"
+version = "0.1.0"
+edition = "2021"
+description = "Drag an Android APK onto this program and get a web build of its native game code (WebAssembly)."
+
+[dependencies]
