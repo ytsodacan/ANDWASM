@@ -1,4 +1,7 @@
 target/
 build/
 *.apk
+*.xapk
+*.apkm
+*-web/
 __pycache__/

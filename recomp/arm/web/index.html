@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>ANDWASM</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; touch-action: none; }
+  #wrap { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; }
+  #canvas { width: min(100vw, calc(100vh * 16 / 9)); aspect-ratio: 16 / 9; display: block; background: #111; }   /* landscape */
+  #status { position: fixed; left: 0; right: 0; bottom: 12px; color: #ccc; font: 14px system-ui, sans-serif; text-align: center; pointer-events: none; }
+</style>
+</head>
+<body>
+<div id="wrap"><canvas id="canvas" oncontextmenu="event.preventDefault()"></canvas></div>
+<div id="status">Loading…</div>
+<script>
+  const status = document.getElementById('status');
+  const canvas = document.getElementById('canvas');
+  var Module = {
+    canvas,
+    print: (t) => console.log(t),
+    printErr: (t) => { console.log(t); const L = (window.__andwasmLog = window.__andwasmLog || []); if (L.length < 50000) L.push(t); if (/first frame/.test(t)) status.textContent = ''; },
+    setStatus: (t) => { if (t) status.textContent = t; },
+    // ?env=NAME[=value] sets environment variables seen by the runtime (debug switches such as FILE_TRACE).
+    preRun: [() => { for (const e of new URLSearchParams(location.search).getAll('env')) { const [k, v] = e.split('='); Module.ENV[k] = v || '1'; } }],
+  };
+  // Pointer -> cocos2d-x touches, in canvas pixels.
+  function pt(e) { const r = canvas.getBoundingClientRect(); return [(e.clientX - r.left) * canvas.width / r.width, (e.clientY - r.top) * canvas.height / r.height]; }
+  const down = new Set();
+  canvas.addEventListener('pointerdown', (e) => { canvas.setPointerCapture(e.pointerId); down.add(e.pointerId); const [x, y] = pt(e); Module._web_touch && Module._web_touch(0, e.pointerId & 31, x, y); });
+  canvas.addEventListener('pointermove', (e) => { if (!down.has(e.pointerId)) return; const [x, y] = pt(e); Module._web_touch && Module._web_touch(1, e.pointerId & 31, x, y); });
+  const up = (e) => { if (!down.delete(e.pointerId)) return; const [x, y] = pt(e); Module._web_touch && Module._web_touch(e.type === 'pointercancel' ? 3 : 2, e.pointerId & 31, x, y); };
+  canvas.addEventListener('pointerup', up); canvas.addEventListener('pointercancel', up);
+  // Keyboard: arrows/WASD go to the game both as Android D-pad keys and as a virtual drag (a touch held at the
+  // screen centre and moved in the held direction), so D-pad and joystick-style controls both respond.
+  const KEYS = { ArrowUp: [19, 0, -1], KeyW: [19, 0, -1], ArrowDown: [20, 0, 1], KeyS: [20, 0, 1],
+                 ArrowLeft: [21, -1, 0], KeyA: [21, -1, 0], ArrowRight: [22, 1, 0], KeyD: [22, 1, 0] };
+  const held = new Set(); const DRAG_ID = 30; let drag = null;
+  // Joystick emulation: press at the anchor (?joy=x,y as fractions of the screen; default centre), then hold the
+  // touch at a fixed deflection in the held direction. Direction changes take effect immediately.
+  const joyArg = (new URLSearchParams(location.search).get('joy') || '').split(',').map(Number);
+  const anchor = () => ({ x: canvas.width * (joyArg.length === 2 && !isNaN(joyArg[0]) ? joyArg[0] : 0.5),
+                          y: canvas.height * (joyArg.length === 2 && !isNaN(joyArg[1]) ? joyArg[1] : 0.5) });
+  const dragTick = () => {
+    if (!held.size) { if (drag) { Module._web_touch && Module._web_touch(2, DRAG_ID, drag.x, drag.y); drag = null; } return; }
+    let dx = 0, dy = 0; for (const k of held) { dx += KEYS[k][1]; dy += KEYS[k][2]; }
+    if (!drag) { const a = anchor(); drag = { ax: a.x, ay: a.y, x: a.x, y: a.y }; Module._web_touch && Module._web_touch(0, DRAG_ID, a.x, a.y); }
+    const len = Math.hypot(dx, dy), R = canvas.height * 0.12;
+    drag.x = drag.ax + (len ? dx / len * R : 0); drag.y = drag.ay + (len ? dy / len * R : 0);
+    Module._web_touch && Module._web_touch(1, DRAG_ID, drag.x, drag.y);
+    requestAnimationFrame(dragTick);
+  };
+  window.addEventListener('keydown', (e) => {
+    if (e.code === 'Enter' || e.code === 'Space') { e.preventDefault(); if (!e.repeat) Module._web_key && Module._web_key(23, 1); return; }
+    const k = KEYS[e.code]; if (!k) return;
+    e.preventDefault(); if (e.repeat) return;
+    Module._web_key && Module._web_key(k[0], 1);
+    const start = !held.size; held.add(e.code); if (start) requestAnimationFrame(dragTick);
+  });
+  window.addEventListener('keyup', (e) => {
+    if (e.code === 'Enter' || e.code === 'Space') { Module._web_key && Module._web_key(23, 0); return; }
+    const k = KEYS[e.code]; if (!k) return;
+    Module._web_key && Module._web_key(k[0], 0); held.delete(e.code);
+  });
+  window.addEventListener('blur', () => { for (const c of held) Module._web_key && Module._web_key(KEYS[c][0], 0); held.clear(); });
+  // Keep the game's surface matched to the canvas size (window resize, rotation, fullscreen).
+  let lastSize = '';
+  const resize = () => {
+    const r = canvas.getBoundingClientRect(); if (!r.width || !r.height) return;
+    const w = Math.round(r.width * devicePixelRatio), h = Math.round(r.height * devicePixelRatio);
+    if (w + 'x' + h === lastSize) return; lastSize = w + 'x' + h;
+    canvas.width = w; canvas.height = h;
+    if (Module._web_resize) Module._web_resize(w, h);
+  };
+  window.addEventListener('resize', resize); document.addEventListener('visibilitychange', resize);
+  setInterval(resize, 1000);
+</script>
+<script>
+  // Audio for the ANDWASM runtime (called from C): music on an <audio> element, effects as WebAudio buffers.
+  // Browsers only start audio after a user gesture, so requested music starts on the first tap or key.
+  (function () {
+    const A = { music: null, musicVol: 1, fxVol: 1, ctx: null, bufs: {}, live: {}, next: 1 };
+    const audioCtx = () => { if (!A.ctx) { try { A.ctx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) {} } return A.ctx; };
+    const bytes = (path) => { try { return Module.FS.readFile(path); } catch (e) { return null; } };
+    const unlock = () => { const c = audioCtx(); if (c && c.state === 'suspended') c.resume();
+      if (A.music && A.music.paused && A.music.wanted) A.music.play().catch(() => {}); };
+    ['pointerdown', 'keydown', 'touchstart'].forEach((ev) => window.addEventListener(ev, unlock, { capture: true }));
+    const buffer = (path, cb) => {
+      if (A.bufs[path]) return cb(A.bufs[path]);
+      const c = audioCtx(), b = c && bytes(path); if (!b) return;
+      c.decodeAudioData(b.slice().buffer, (buf) => { A.bufs[path] = buf; cb(buf); }, () => {});
+    };
+    window.__awInit = () => {};
+    window.__awMusicPlay = (path, loop) => {
+      if (A.music) { A.music.pause(); URL.revokeObjectURL(A.music.src); }
+      const b = bytes(path); if (!b) return;
+      const type = /\.ogg$/i.test(path) ? 'audio/ogg' : /\.wav$/i.test(path) ? 'audio/wav' : 'audio/mpeg';
+      const m = new Audio(URL.createObjectURL(new Blob([b], { type })));
+      m.loop = !!loop; m.volume = A.musicVol; m.wanted = true; A.music = m;
+      m.play().catch(() => {});
+    };
+    window.__awMusicCmd = (cmd, v) => {   // 0 stop, 1 pause, 2 resume, 3 volume, 4 rewind
+      const m = A.music;
+      if (cmd === 3) { A.musicVol = Math.max(0, Math.min(1, v)); if (m) m.volume = A.musicVol; return; }
+      if (!m) return;
+      if (cmd === 0) { m.pause(); m.wanted = false; m.currentTime = 0; }
+      else if (cmd === 1) { m.pause(); m.wanted = false; }
+      else if (cmd === 2) { m.wanted = true; m.play().catch(() => {}); }
+      else if (cmd === 4) { m.currentTime = 0; m.wanted = true; m.play().catch(() => {}); }
+    };
+    window.__awMusicPlaying = () => (A.music && !A.music.paused ? 1 : 0);
+    window.__awEffectPlay = (path, loop, rate, gain) => {
+      const id = A.next++;
+      buffer(path, (buf) => {
+        const c = A.ctx; if (!c || c.state !== 'running') return;
+        const src = c.createBufferSource(); src.buffer = buf; src.loop = !!loop; src.playbackRate.value = rate > 0 ? rate : 1;
+        const g = c.createGain(); g.gain.value = (gain > 0 ? gain : 1) * A.fxVol;
+        src.connect(g); g.connect(c.destination);
+        src.onended = () => { delete A.live[id]; }; A.live[id] = src; src.start();
+      });
+      return id;
+    };
+    window.__awEffectCmd = (cmd, id, v) => {   // 0 stop one, 1 stop all, 2 volume, 4 pause all, 5 resume all
+      if (cmd === 0) { const s = A.live[id]; if (s) { try { s.stop(); } catch (e) {} delete A.live[id]; } }
+      else if (cmd === 1) { for (const k in A.live) { try { A.live[k].stop(); } catch (e) {} } A.live = {}; }
+      else if (cmd === 2) A.fxVol = Math.max(0, Math.min(1, v));
+      else if (cmd === 4) { if (A.ctx) A.ctx.suspend(); }
+      else if (cmd === 5) { if (A.ctx) A.ctx.resume(); }
+    };
+    window.__awEffectPreload = (path) => buffer(path, () => {});
+  })();
+</script>
+<script src="index.js"></script>
+</body>
+</html>

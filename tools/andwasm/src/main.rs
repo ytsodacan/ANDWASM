@@ -1,14 +1,14 @@
-//! ANDWASM: drop an Android APK on this program (or pass its path) and get a web build.
+//! ANDWASM: drop an Android app (.apk, .xapk or .apkm) on this program (or pass its path) and get a web build.
 //!
-//! Usage:   andwasm <file.apk>        (drag the .apk onto the terminal window, then Enter)
+//! Usage:   andwasm <file.apk|.xapk|.apkm>   (drag the file onto the terminal window, then Enter)
 //!
 //! What it does:
-//!   1. checks the file is an APK that ships an x86 native library (lib/x86/*.so)
-//!   2. runs the build pipeline (extract -> lift x86 -> compile to WebAssembly -> pack)
-//!   3. copies the finished web files to "<name>-web/" next to the APK
+//!   - x86 native code (lib/x86/*.so, plain .apk): tools/apk_to_web.py (extract -> lift x86 -> WebAssembly -> pack)
+//!   - otherwise ARM (lib/armeabi-v7a, also inside .xapk/.apkm bundles): recomp/arm/port_apk.py
+//!     (lift ARM -> WebAssembly, reusing an earlier build when the library is the same)
+//!   - copies the finished web files to "<name>-web/" next to the input file
 //!
-//! The pipeline steps are the existing tools (tools/apk_to_web.py, recomp/, tools/pack_dist.py);
-//! this program is the drag-and-drop front end and the checks around them.
+//! This program is the drag-and-drop front end and the checks around the pipeline scripts.
 
 use std::fs;
 use std::io::{self, Read, Write};
@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 use std::process::{exit, Command};
 
 const PIPELINE: &str = "tools/apk_to_web.py";
+const ARM_PIPELINE: &str = "recomp/arm/port_apk.py";
 
 fn main() {
     let raw = match std::env::args().nth(1) {
@@ -50,7 +51,7 @@ fn clean_path(raw: &str) -> PathBuf {
 }
 
 fn prompt_for_path() -> String {
-    eprint!("Drag an .apk onto this window and press Enter: ");
+    eprint!("Drag an .apk / .xapk / .apkm onto this window and press Enter: ");
     let _ = io::stderr().flush();
     let mut s = String::new();
     let _ = io::stdin().read_to_string(&mut s);
@@ -61,18 +62,46 @@ fn run(apk: &Path) -> Result<(), String> {
     if !apk.exists() {
         return Err(format!("no such file: {}", apk.display()));
     }
-    if apk.extension().and_then(|e| e.to_str()).map(|e| e.eq_ignore_ascii_case("apk")) != Some(true) {
-        return Err("that is not an .apk file".into());
+    let ext = apk.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+    if !["apk", "xapk", "apkm"].contains(&ext.as_str()) {
+        return Err("that is not an .apk, .xapk or .apkm file".into());
     }
-    let has_x86 = zip_has_x86_native(apk)?;
-    if !has_x86 {
-        return Err("this APK has no x86 native library (lib/x86/*.so), so there is no native code to build".into());
-    }
-
     let repo = repo_root()?;
     let stem = apk.file_stem().and_then(|s| s.to_str()).unwrap_or("app");
     let safe: String = stem.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' { c } else { '_' }).collect();
-    let work = repo.join("build").join("andwasm").join(&safe);
+    let out = apk.parent().unwrap_or(Path::new(".")).join(format!("{safe}-web"));
+
+    if ext == "apk" && zip_has_x86_native(apk)? {
+        return run_x86(apk, &repo, &safe, &out);
+    }
+    // ARM (armeabi-v7a), including split bundles
+    println!("ANDWASM: building {} with the ARM pipeline", apk.display());
+    let status = Command::new("python3")
+        .arg(repo.join(ARM_PIPELINE))
+        .arg(apk)
+        .arg("--name")
+        .arg(&safe)
+        .current_dir(&repo)
+        .status()
+        .map_err(|e| format!("could not start the ARM pipeline: {e}"))?;
+    if !status.success() {
+        return Err(format!("the ARM pipeline stopped (exit {})", status.code().unwrap_or(-1)));
+    }
+    let web = repo.join("build").join("games").join(&safe).join("web");
+    if !web.join("index.html").exists() {
+        return Err("the build finished without a web output (index.html missing)".into());
+    }
+    if out.exists() {
+        fs::remove_dir_all(&out).map_err(|e| format!("could not clear {}: {e}", out.display()))?;
+    }
+    copy_dir(&web, &out).map_err(|e| format!("could not copy the web files: {e}"))?;
+    println!("\nANDWASM done. Web build: {}", out.display());
+    println!("Play it:  python3 {} {} 8000   then open http://localhost:8000/", repo.join("recomp/arm/web/serve.py").display(), out.display());
+    Ok(())
+}
+
+fn run_x86(apk: &Path, repo: &Path, safe: &str, out: &Path) -> Result<(), String> {
+    let work = repo.join("build").join("andwasm").join(safe);
     println!("ANDWASM: building {} (work folder: {})", apk.display(), work.display());
 
     let status = Command::new("python3")
@@ -80,7 +109,7 @@ fn run(apk: &Path) -> Result<(), String> {
         .arg(apk)
         .arg("--work")
         .arg(&work)
-        .current_dir(&repo)
+        .current_dir(repo)
         .status()
         .map_err(|e| format!("could not start the build pipeline: {e}"))?;
     if !status.success() {
@@ -91,13 +120,12 @@ fn run(apk: &Path) -> Result<(), String> {
     if !dist.join("manifest.json").exists() {
         return Err("the build finished without a web output (manifest.json missing)".into());
     }
-    let out = apk.parent().unwrap_or(Path::new(".")).join(format!("{safe}-web"));
     if out.exists() {
-        fs::remove_dir_all(&out).map_err(|e| format!("could not clear {}: {e}", out.display()))?;
+        fs::remove_dir_all(out).map_err(|e| format!("could not clear {}: {e}", out.display()))?;
     }
-    copy_dir(&dist, &out).map_err(|e| format!("could not copy the web files: {e}"))?;
+    copy_dir(&dist, out).map_err(|e| format!("could not copy the web files: {e}"))?;
     println!("\nANDWASM done. Web build: {}", out.display());
-    println!("Files: {} (manifest.json plus the wasm and asset chunks)", count_files(&out));
+    println!("Files: {} (manifest.json plus the wasm and asset chunks)", count_files(out));
     Ok(())
 }
 
